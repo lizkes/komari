@@ -3,7 +3,9 @@ package grpc
 import (
 	"fmt"
 
+	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/proto"
+	"github.com/komari-monitor/komari/utils"
 )
 
 // 全局的监控服务器实例
@@ -98,4 +100,17 @@ func IsClientConnectedViaGRPC(clientUUID string) bool {
 
 	_, exists := globalMonitorServer.getClientStream(clientUUID)
 	return exists
+}
+
+// GetClientIPInfo 获取客户端IP信息（用于ping任务IP协议检查）
+func GetClientIPInfo(clientUUID string) utils.ClientIPInfo {
+	client, err := clients.GetClientBasicInfo(clientUUID)
+	if err != nil {
+		return utils.ClientIPInfo{} // 返回空信息
+	}
+
+	return utils.ClientIPInfo{
+		IPv4: client.IPv4,
+		IPv6: client.IPv6,
+	}
 }

@@ -233,7 +233,6 @@ var ServerCmd = &cobra.Command{
 				pingTaskGroup.POST("/add", admin.AddPingTask)
 				pingTaskGroup.POST("/delete", admin.DeletePingTask)
 				pingTaskGroup.POST("/edit", admin.EditPingTask)
-
 			}
 
 		}

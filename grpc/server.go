@@ -50,10 +50,13 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 	defer func() {
 		if authenticated && clientUUID != "" {
+			log.Printf("客户端 %s 连接即将断开，开始清理", clientUUID)
 			s.removeClientStream(clientUUID)
 			// 发送离线通知
 			notification.OfflineNotification(clientUUID)
-			log.Printf("客户端 %s 断开连接", clientUUID)
+			log.Printf("客户端 %s 断开连接，清理完成", clientUUID)
+		} else {
+			log.Printf("未认证的连接断开")
 		}
 	}()
 
@@ -76,21 +79,31 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 				clientUUID = uuid
 				authenticated = true
 
-				// 检查是否已有连接
+				// 智能处理重复连接：如果已有连接，先清理旧连接
 				if s.hasClientStream(clientUUID) {
-					response := &proto.MonitorResponse{
-						Message: &proto.MonitorResponse_Error{
-							Error: &proto.ErrorResponse{
-								Status: "error",
-								Error:  "Token already in use",
+					log.Printf("检测到客户端 %s 重复连接，清理旧连接并接受新连接", clientUUID)
+
+					// 获取旧连接
+					oldStream, exists := s.getClientStream(clientUUID)
+					if exists {
+						// 向旧连接发送断开通知
+						disconnectResponse := &proto.MonitorResponse{
+							Message: &proto.MonitorResponse_Error{
+								Error: &proto.ErrorResponse{
+									Status: "error",
+									Error:  "Connection replaced by new client",
+								},
 							},
-						},
+						}
+						oldStream.Send(disconnectResponse)
 					}
-					stream.Send(response)
-					return fmt.Errorf("客户端 %s 重复连接", clientUUID)
+
+					// 强制清理旧连接
+					s.removeClientStream(clientUUID)
+					log.Printf("已清理客户端 %s 的旧连接", clientUUID)
 				}
 
-				// 保存客户端流
+				// 保存新的客户端流
 				s.setClientStream(clientUUID, stream)
 
 				// 发送认证成功响应
@@ -105,7 +118,7 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 				// 发送上线通知
 				go notification.OnlineNotification(clientUUID)
-				log.Printf("客户端 %s 认证成功", clientUUID)
+				log.Printf("客户端 %s 认证成功并已连接", clientUUID)
 			} else {
 				// 发送认证失败响应
 				response := &proto.MonitorResponse{
@@ -417,7 +430,21 @@ func (s *MonitorServer) setClientStream(clientUUID string, stream proto.MonitorS
 func (s *MonitorServer) removeClientStream(clientUUID string) {
 	s.streamsMutex.Lock()
 	defer s.streamsMutex.Unlock()
-	delete(s.clientStreams, clientUUID)
+
+	if _, exists := s.clientStreams[clientUUID]; exists {
+		delete(s.clientStreams, clientUUID)
+		log.Printf("已从连接池移除客户端 %s", clientUUID)
+
+		// 清理部分报告缓存
+		s.partialMutex.Lock()
+		if s.partialReports[clientUUID] != nil {
+			delete(s.partialReports, clientUUID)
+			log.Printf("已清理客户端 %s 的部分报告缓存", clientUUID)
+		}
+		s.partialMutex.Unlock()
+	} else {
+		log.Printf("警告：尝试移除不存在的客户端连接 %s", clientUUID)
+	}
 }
 
 func (s *MonitorServer) hasClientStream(clientUUID string) bool {
@@ -462,6 +489,20 @@ func (s *MonitorServer) GetConnectedClients() []string {
 	return clients
 }
 
+// ForceCleanupClientConnection 强制清理指定客户端的连接
+func (s *MonitorServer) ForceCleanupClientConnection(clientUUID string) {
+	log.Printf("强制清理客户端 %s 的连接", clientUUID)
+	s.removeClientStream(clientUUID)
+	// 不发送离线通知，因为这是强制清理
+}
+
+// GetConnectionCount 获取当前连接数（用于监控）
+func (s *MonitorServer) GetConnectionCount() int {
+	s.streamsMutex.RLock()
+	defer s.streamsMutex.RUnlock()
+	return len(s.clientStreams)
+}
+
 // StartGRPCServer 启动gRPC服务器
 func StartGRPCServer(port string) (*grpc.Server, error) {
 	lis, err := net.Listen("tcp", ":"+port)
@@ -478,7 +519,7 @@ func StartGRPCServer(port string) (*grpc.Server, error) {
 	SetGlobalMonitorServer(monitorServer)
 
 	// 为ping调度注入gRPC函数
-	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients)
+	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients, GetClientIPInfo)
 
 	ws.SetGRPCConnectedClientsFunc(GetGRPCConnectedClients)
 
