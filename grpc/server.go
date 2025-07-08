@@ -56,11 +56,12 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 	defer func() {
 		if authenticated && clientUUID != "" {
-			log.Printf("客户端 %s 连接即将断开，开始清理", clientUUID)
+			clientName := s.getClientDisplayName(clientUUID)
+			log.Printf("客户端 %s 连接即将断开，开始清理", clientName)
 			s.removeClientStream(clientUUID)
 			// 发送离线通知
 			notification.OfflineNotification(clientUUID)
-			log.Printf("客户端 %s 断开连接，清理完成", clientUUID)
+			log.Printf("客户端 %s 断开连接，清理完成", clientName)
 		} else {
 			log.Printf("未认证的连接断开")
 		}
@@ -87,7 +88,8 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 				// 智能处理重复连接：如果已有连接，先清理旧连接
 				if s.hasClientStream(clientUUID) {
-					log.Printf("检测到客户端 %s 重复连接，清理旧连接并接受新连接", clientUUID)
+					clientName := s.getClientDisplayName(clientUUID)
+					log.Printf("检测到客户端 %s 重复连接，清理旧连接并接受新连接", clientName)
 
 					// 获取旧连接
 					oldStream, exists := s.getClientStream(clientUUID)
@@ -106,7 +108,7 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 					// 强制清理旧连接
 					s.removeClientStream(clientUUID)
-					log.Printf("已清理客户端 %s 的旧连接", clientUUID)
+					log.Printf("已清理客户端 %s 的旧连接", clientName)
 				}
 
 				// 保存新的客户端流
@@ -127,7 +129,8 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 				// 发送上线通知
 				go notification.OnlineNotification(clientUUID)
-				log.Printf("客户端 %s 认证成功并已连接", clientUUID)
+				clientName := s.getClientDisplayName(clientUUID)
+				log.Printf("客户端 %s 认证成功并已连接", clientName)
 			} else {
 				// 发送认证失败响应
 				response := &proto.MonitorResponse{
@@ -448,14 +451,15 @@ func (s *MonitorServer) removeClientStream(clientUUID string) {
 	defer s.streamsMutex.Unlock()
 
 	if _, exists := s.clientStreams[clientUUID]; exists {
+		clientName := s.getClientDisplayName(clientUUID)
 		delete(s.clientStreams, clientUUID)
-		log.Printf("已从连接池移除客户端 %s", clientUUID)
+		log.Printf("已从连接池移除客户端 %s", clientName)
 
 		// 清理部分报告缓存
 		s.partialMutex.Lock()
 		if s.partialReports[clientUUID] != nil {
 			delete(s.partialReports, clientUUID)
-			log.Printf("已清理客户端 %s 的部分报告缓存", clientUUID)
+			log.Printf("已清理客户端 %s 的部分报告缓存", clientName)
 		}
 		s.partialMutex.Unlock()
 
@@ -466,7 +470,8 @@ func (s *MonitorServer) removeClientStream(clientUUID string) {
 		}
 		s.basicInfoMutex.Unlock()
 	} else {
-		log.Printf("警告：尝试移除不存在的客户端连接 %s", clientUUID)
+		clientName := s.getClientDisplayName(clientUUID)
+		log.Printf("警告：尝试移除不存在的客户端连接 %s", clientName)
 	}
 }
 
@@ -488,7 +493,8 @@ func (s *MonitorServer) getClientStream(clientUUID string) (proto.MonitorService
 func (s *MonitorServer) SendTaskToClient(clientUUID string, task *proto.TaskRequest) error {
 	stream, exists := s.getClientStream(clientUUID)
 	if !exists {
-		return fmt.Errorf("客户端 %s 未连接", clientUUID)
+		clientName := s.getClientDisplayName(clientUUID)
+		return fmt.Errorf("客户端 %s 未连接", clientName)
 	}
 
 	response := &proto.MonitorResponse{
@@ -514,7 +520,8 @@ func (s *MonitorServer) GetConnectedClients() []string {
 
 // ForceCleanupClientConnection 强制清理指定客户端的连接
 func (s *MonitorServer) ForceCleanupClientConnection(clientUUID string) {
-	log.Printf("强制清理客户端 %s 的连接", clientUUID)
+	clientName := s.getClientDisplayName(clientUUID)
+	log.Printf("强制清理客户端 %s 的连接", clientName)
 	s.removeClientStream(clientUUID)
 	// 不发送离线通知，因为这是强制清理
 }
@@ -583,4 +590,16 @@ func (s *MonitorServer) getCachedClientName(clientUUID string) string {
 		return client.Name
 	}
 	return ""
+}
+
+// getClientDisplayName 获取用于日志显示的客户端名称
+func (s *MonitorServer) getClientDisplayName(clientUUID string) string {
+	if name := s.getCachedClientName(clientUUID); name != "" {
+		return name
+	}
+	// 如果没有名称，显示UUID的前8位
+	if len(clientUUID) >= 8 {
+		return clientUUID[:8]
+	}
+	return clientUUID
 }
