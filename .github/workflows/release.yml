@@ -1,8 +1,15 @@
-name: Attach Release Binaries
+name: Release Binaries
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to use for the image (must start with v)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -13,13 +20,50 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    outputs:
+      tag_name: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            # 验证tag是否以v开头
+            if [[ ! "$TAG" =~ ^v.* ]]; then
+              echo "错误: Tag必须以'v'开头 (例如: v1.0.0)"
+              exit 1
+            fi
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          else
+            # 从push tags事件中提取tag
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.tag }} \
+            --title "Release ${{ steps.version.outputs.tag }}" \
+            --notes "自动发布 ${{ steps.version.outputs.tag }}" \
+            --repo ${{ github.repository }}
+
   build-and-attach-binaries:
     runs-on: ubuntu-latest
+    needs: create-release
 
     strategy:
       matrix:
         goos: [windows, linux]
-        goarch: [amd64, arm64, 386, riscv64]
+        goarch: [amd64, arm64]
         include:
           # Windows
           - goos: windows
@@ -29,10 +73,6 @@ jobs:
           - goos: windows
             goarch: arm64
             zig_target_triple: aarch64-windows-gnu
-            binary_extension: .exe
-          - goos: windows
-            goarch: 386
-            zig_target_triple: x86-windows-gnu
             binary_extension: .exe
 
           # Linux
@@ -44,18 +84,6 @@ jobs:
             goarch: arm64
             zig_target_triple: aarch64-linux-musl
             binary_extension: ""
-          - goos: linux
-            goarch: 386
-            zig_target_triple: x86-linux-musl
-            binary_extension: ""
-          - goos: linux
-            goarch: riscv64
-            zig_target_triple: riscv64-linux-musl
-            binary_extension: ""
-
-        exclude:
-          - goos: windows
-            goarch: riscv64
 
     steps:
       - name: Checkout code
@@ -68,7 +96,7 @@ jobs:
 
       - name: Clone and build frontend
         run: |
-          git clone https://github.com/komari-monitor/komari-web web
+          git clone https://github.com/lizkes/komari-web web
           cd web
           npm install
           npm run build
@@ -101,7 +129,7 @@ jobs:
           if [ "${{ matrix.binary_extension }}" != "" ]; then
             BINARY_NAME=${BINARY_NAME}${{ matrix.binary_extension }}
           fi
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ needs.create-release.outputs.tag_name }}"
           VERSION_HASH="${{ github.sha }}" # Use commit SHA for hash
           go build -trimpath -ldflags="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=${VERSION} -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_HASH}" -o $BINARY_NAME
 
@@ -115,5 +143,5 @@ jobs:
             BINARY_NAME=${BINARY_NAME}.exe
           fi
           # Upload the binary as a release asset using GitHub CLI
-          gh release upload ${{ github.event.release.tag_name }} $BINARY_NAME --repo ${{ github.repository }}
+          gh release upload ${{ needs.create-release.outputs.tag_name }} $BINARY_NAME --repo ${{ github.repository }}
         shell: bash

@@ -1,9 +1,10 @@
 name: Build Binaries on Main Push
 
 on:
-  push:
-    branches:
-      - main
+  # push:
+  #   branches:
+  #     - main
+  workflow_dispatch:
 
 jobs:
   build-binaries:
@@ -12,7 +13,7 @@ jobs:
     strategy:
       matrix:
         goos: [windows, linux]
-        goarch: [amd64, arm64, 386, riscv64]
+        goarch: [amd64, arm64]
         include:
           # Windows
           - goos: windows
@@ -22,10 +23,6 @@ jobs:
           - goos: windows
             goarch: arm64
             zig_target_triple: aarch64-windows-gnu
-            binary_extension: .exe
-          - goos: windows
-            goarch: 386
-            zig_target_triple: x86-windows-gnu
             binary_extension: .exe
 
           # Linux
@@ -37,18 +34,6 @@ jobs:
             goarch: arm64
             zig_target_triple: aarch64-linux-musl
             binary_extension: ""
-          - goos: linux
-            goarch: 386
-            zig_target_triple: x86-linux-musl
-            binary_extension: ""
-          - goos: linux
-            goarch: riscv64
-            zig_target_triple: riscv64-linux-musl
-            binary_extension: ""
-
-        exclude:
-          - goos: windows
-            goarch: riscv64
 
     steps:
       - name: Checkout code
@@ -61,7 +46,7 @@ jobs:
 
       - name: Clone and build frontend
         run: |
-          git clone https://github.com/komari-monitor/komari-web web
+          git clone https://github.com/lizkes/komari-web web
           cd web
           npm install
           npm run build

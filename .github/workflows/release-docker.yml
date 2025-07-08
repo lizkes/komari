@@ -1,9 +1,15 @@
 name: Publish Docker Image
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to use for the image (must start with v)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,6 +22,7 @@ env:
 jobs:
   build-and-push-multi-arch:
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     permissions:
       contents: read
       packages: write
@@ -23,6 +30,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            if [[ ! "$TAG" =~ ^v.* ]]; then
+              echo "错误: Tag必须以'v'开头 (例如: v1.0.0)"
+              exit 1
+            fi
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -31,7 +54,7 @@ jobs:
 
       - name: Clone and build frontend
         run: |
-          git clone https://github.com/komari-monitor/komari-web web
+          git clone https://github.com/lizkes/komari-web web
           cd web
           npm install
           npm run build
@@ -56,7 +79,7 @@ jobs:
           CGO_ENABLED: 1
           GIN_MODE: release
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ steps.version.outputs.tag }}"
           VERSION_HASH="${{ github.sha }}"
           LDFLAGS="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=${VERSION} -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_HASH}"
 
@@ -85,7 +108,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ github.event.release.tag_name }}
+            type=raw,value=${{ steps.version.outputs.tag }}
             type=raw,value=latest
 
       - name: Build and push Docker image

@@ -39,7 +39,7 @@ Komari 是一款轻量级的自托管服务器监控工具，旨在提供简单�
 > 你也可以通过环境变量 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 自定义初始用户名和密码。
 
 ### 二进制文件部署
-1. 访问 Komari 的 [GitHub Release 页面](https://github.com/komari-monitor/komari/releases) 下载适用于你操作系统的最新二进制文件。
+1. 访问 Komari 的 [GitHub Release 页面](https://github.com/lizkes/komari/releases) 下载适用于你操作系统的最新二进制文件。
 2. 运行 Komari：
    ```bash
    ./komari server -l 0.0.0.0:25774
@@ -54,14 +54,14 @@ Komari 是一款轻量级的自托管服务器监控工具，旨在提供简单�
 ### 手工构建
 1. 构建前端静态文件：
    ```bash
-   git clone https://github.com/komari-monitor/komari-web
+   git clone https://github.com/lizkes/komari-web
    cd komari-web
    npm install
    npm run build
    ```
 2. 构建后端：
    ```bash
-   git clone https://github.com/komari-monitor/komari
+   git clone https://github.com/lizkes/komari
    cd komari
    ```
    将步骤1中生成的静态文件复制到 `komari` 项目根目录下的 `/public/dist` 文件夹。
