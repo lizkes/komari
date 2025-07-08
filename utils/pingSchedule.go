@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/komari-monitor/komari/database/models"
-	"github.com/komari-monitor/komari/ws"
 )
 
 // PingTaskManager 管理定时器和任务
@@ -14,12 +13,21 @@ type PingTaskManager struct {
 	tickers  map[int]*time.Ticker
 	tasks    map[int][]models.PingTask
 	stopChan chan struct{}
+	// gRPC任务发送函数，由外部注入
+	sendPingTaskFunc func(clientUUID string, taskID uint32, pingType, target string) error
+	getClientsFunc   func() map[string]bool
 }
 
 var manager = &PingTaskManager{
 	tickers:  make(map[int]*time.Ticker),
 	tasks:    make(map[int][]models.PingTask),
 	stopChan: make(chan struct{}),
+}
+
+// SetGRPCFunctions 设置gRPC相关函数（由grpc包调用）
+func SetGRPCFunctions(sendPingTask func(string, uint32, string, string) error, getClients func() map[string]bool) {
+	manager.sendPingTaskFunc = sendPingTask
+	manager.getClientsFunc = getClients
 }
 
 // Reload 重载时间表
@@ -65,23 +73,20 @@ func (m *PingTaskManager) Reload(pingTasks []models.PingTask) error {
 
 // executePingTask 执行单个PingTask
 func executePingTask(task models.PingTask) {
-	clients := ws.GetConnectedClients()
-	var message struct {
-		TaskID  uint   `json:"ping_task_id"`
-		Message string `json:"message"`
-		Type    string `json:"ping_type"`
-		Target  string `json:"ping_target"`
+	// 如果gRPC函数未设置，跳过
+	if manager.sendPingTaskFunc == nil || manager.getClientsFunc == nil {
+		return
 	}
+
+	// 获取gRPC连接的客户端
+	grpcClients := manager.getClientsFunc()
+
 	for _, clientUUID := range task.Clients {
-		if conn, exists := clients[clientUUID]; exists {
-			if conn == nil {
-				continue
-			}
-			message.Message = "ping"
-			message.TaskID = task.Id
-			message.Type = task.Type
-			message.Target = task.Target
-			if err := conn.WriteJSON(message); err != nil {
+		if grpcClients[clientUUID] {
+			// 通过gRPC发送ping任务
+			err := manager.sendPingTaskFunc(clientUUID, uint32(task.Id), task.Type, task.Target)
+			if err != nil {
+				// 静默失败，继续处理其他客户端
 				continue
 			}
 		}

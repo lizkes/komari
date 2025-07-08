@@ -1,15 +1,12 @@
 package admin
 
 import (
-	"encoding/json"
-
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 	"github.com/komari-monitor/komari/api"
 	"github.com/komari-monitor/komari/database/logOperation"
 	"github.com/komari-monitor/komari/database/tasks"
+	komari_grpc "github.com/komari-monitor/komari/grpc"
 	"github.com/komari-monitor/komari/utils"
-	"github.com/komari-monitor/komari/ws"
 )
 
 // 接受数据类型：
@@ -20,54 +17,57 @@ func Exec(c *gin.Context) {
 		Command string   `json:"command" binding:"required"`
 		Clients []string `json:"clients" binding:"required"`
 	}
-	var onlineClients []string
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.RespondError(c, 400, "Invalid or missing request body: "+err.Error())
 		return
 	}
-	for uuid := range ws.GetConnectedClients() {
-		if contain(req.Clients, uuid) {
+
+	// 获取gRPC连接的客户端
+	grpcClients := komari_grpc.GetGRPCConnectedClients()
+	var onlineClients []string
+
+	// 检查请求的客户端是否在线
+	for _, uuid := range req.Clients {
+		if grpcClients[uuid] {
 			onlineClients = append(onlineClients, uuid)
 		} else {
 			api.RespondError(c, 400, "Client not connected: "+uuid)
 			return
 		}
 	}
+
 	if len(onlineClients) == 0 {
 		api.RespondError(c, 400, "No clients connected")
 		return
 	}
+
+	// 创建任务
 	taskId := utils.GenerateRandomString(16)
 	if err := tasks.CreateTask(taskId, onlineClients, req.Command); err != nil {
 		api.RespondError(c, 500, "Failed to create task: "+err.Error())
 		return
 	}
-	for _, uuid := range onlineClients {
-		var send struct {
-			Message string `json:"message"`
-			Command string `json:"command"`
-			TaskId  string `json:"task_id"`
-		}
-		send.Message = "exec"
-		send.Command = req.Command
-		send.TaskId = taskId
 
-		payload, _ := json.Marshal(send)
-		client := ws.GetConnectedClients()[uuid]
-		if client != nil {
-			client.WriteMessage(websocket.TextMessage, payload)
-		} else {
-			api.RespondError(c, 400, "Client connection is null: "+uuid)
+	// 通过gRPC发送任务到客户端
+	for _, uuid := range onlineClients {
+		err := komari_grpc.SendExecTaskToClient(uuid, taskId, req.Command)
+		if err != nil {
+			api.RespondError(c, 500, "Failed to send task to client "+uuid+": "+err.Error())
 			return
 		}
 	}
+
+	// 记录操作日志
 	uuid, _ := c.Get("uuid")
 	logOperation.Log(c.ClientIP(), uuid.(string), "REC, task id: "+taskId, "warn")
+
 	api.RespondSuccess(c, gin.H{
 		"task_id": taskId,
 		"clients": onlineClients,
 	})
 }
+
 func contain(clients []string, uuid string) bool {
 	for _, client := range clients {
 		if client == uuid {
