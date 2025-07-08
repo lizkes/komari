@@ -7,21 +7,26 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-binaries:
+  build-and-push-image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4      
-      
-      #- name: Create dummy index.html
-      #  run: |
-      #    mkdir -p public/dist
-      #    echo "<html><body><h1>This is komari development server.</h1></body></html>" > public/dist/index.html
-      
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+
       - name: Clone and build frontend
         run: |
-          git clone https://github.com/komari-monitor/komari-web web
+          git clone https://github.com/lizkes/komari-web web
           cd web
           npm install
           npm run build
@@ -34,49 +39,54 @@ jobs:
         with:
           go-version: "1.23"
 
-      - name: Build application
+      - name: Install Zig
+        run: |
+          wget https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz
+          sudo tar -C /usr/local -Jxf zig-x86_64-linux-0.14.1.tar.xz
+          echo "PATH=$PATH:/usr/local/zig-x86_64-linux-0.14.1" >> $GITHUB_ENV
+
+      - name: Build static binaries for multi-arch
         env:
           GOOS: linux
-          GOARCH: amd64
+          CGO_ENABLED: 1
+          GIN_MODE: release
         run: |
           VERSION_SHA="${{ github.sha }}"
-          go build -ldflags "-X github.com/komari-monitor/komari/utils.CurrentVersion=dev -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_SHA}" -o komari .
+          LDFLAGS="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=dev -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_SHA}"
 
-      - name: Upload binary as artifact
-        uses: actions/upload-artifact@v4
+          echo "Building for linux/amd64..."
+          GOARCH=amd64 CC="zig cc -target x86_64-linux-musl" go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64
+
+          echo "Building for linux/arm64..."
+          GOARCH=arm64 CC="zig cc -target aarch64-linux-musl" go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
         with:
-          name: komari
-          path: komari
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy-to-production:
-    needs: build-binaries
-    runs-on: ubuntu-latest
-    env:
-      PRODUCTION_SERVER: ${{ vars.PRODUCTION_SERVER }}
-    if: github.ref == 'refs/heads/dev'
-
-    steps:
-      - name: Download binary
-        uses: actions/download-artifact@v4
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          name: komari
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=dev
+            type=sha,format=short
 
-      - name: Setup SSH Key
-        uses: webfactory/ssh-agent@v0.8.0
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
         with:
-          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
-
-      - name: Add host to known hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ env.PRODUCTION_SERVER }} >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Deploy to production
-        run: |
-          chmod +x komari
-          ssh root@${{ env.PRODUCTION_SERVER }} 'mkdir -p /opt/komari/'
-          ssh root@${{ env.PRODUCTION_SERVER }} 'systemctl stop komari.service || true'
-          ssh root@${{ env.PRODUCTION_SERVER }} 'rm -f /opt/komari/komari.old'
-          ssh root@${{ env.PRODUCTION_SERVER }} 'mv /opt/komari/komari /opt/komari/komari.old || true'
-          scp komari root@${{ env.PRODUCTION_SERVER }}:/opt/komari/komari
-          ssh root@${{ env.PRODUCTION_SERVER }} 'systemctl start komari.service'
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
