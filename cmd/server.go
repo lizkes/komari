@@ -28,6 +28,7 @@ import (
 	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/database/records"
 	"github.com/komari-monitor/komari/database/tasks"
+	komari_grpc "github.com/komari-monitor/komari/grpc"
 	"github.com/komari-monitor/komari/public"
 	"github.com/komari-monitor/komari/utils"
 	"github.com/komari-monitor/komari/utils/cloudflared"
@@ -36,10 +37,12 @@ import (
 	u_notification "github.com/komari-monitor/komari/utils/notification"
 	"github.com/komari-monitor/komari/ws"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 )
 
 var (
 	DynamicCorsEnabled bool = false
+	grpcServer         *grpc.Server
 )
 
 var ServerCmd = &cobra.Command{
@@ -126,10 +129,11 @@ var ServerCmd = &cobra.Command{
 		// #region Agent
 		tokenAuthrized := r.Group("/api/clients", api.TokenAuthMiddleware())
 		{
-			tokenAuthrized.GET("/report", client.WebSocketReport) // websocket
+			// 保留基础信息上传（可能仍被某些功能使用）
 			tokenAuthrized.POST("/uploadBasicInfo", client.UploadBasicInfo)
-			tokenAuthrized.POST("/report", client.UploadReport)
+			// 保留终端WebSocket连接
 			tokenAuthrized.GET("/terminal", client.EstablishConnection)
+			// 保留任务结果上传（任务执行结果暂时仍使用HTTP）
 			tokenAuthrized.POST("/task/result", client.TaskResult)
 		}
 		// #region 管理员
@@ -229,7 +233,6 @@ var ServerCmd = &cobra.Command{
 				pingTaskGroup.POST("/add", admin.AddPingTask)
 				pingTaskGroup.POST("/delete", admin.DeletePingTask)
 				pingTaskGroup.POST("/edit", admin.EditPingTask)
-
 			}
 
 		}
@@ -242,6 +245,14 @@ var ServerCmd = &cobra.Command{
 		config.Subscribe(func(event config.ConfigEvent) {
 			public.UpdateIndex(event.New)
 		})
+
+		// 启动gRPC服务器
+		grpcPort := GetEnv("KOMARI_GRPC_PORT", "25775")
+		grpcServer, err = komari_grpc.StartGRPCServer(grpcPort)
+		if err != nil {
+			log.Fatalf("启动gRPC服务器失败: %v", err)
+		}
+		log.Printf("gRPC服务器已启动，监听端口: %s", grpcPort)
 
 		srv := &http.Server{
 			Addr:    flags.Listen,
@@ -259,6 +270,13 @@ var ServerCmd = &cobra.Command{
 		OnShutdown()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+
+		// 停止gRPC服务器
+		if grpcServer != nil {
+			log.Println("正在停止gRPC服务器...")
+			grpcServer.GracefulStop()
+		}
+
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Fatalf("Server forced to shutdown: %v", err)
 		}

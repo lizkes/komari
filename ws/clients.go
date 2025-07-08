@@ -46,10 +46,8 @@ func GetClients(c *gin.Context) {
 			conn.WriteJSON(gin.H{"status": "error", "error": "Invalid message"})
 			continue
 		}
-		// 已建立连接的客户端uuid列表
-		for key := range GetConnectedClients() {
-			resp.Online = append(resp.Online, key)
-		}
+		// 使用gRPC连接状态获取已建立连接的客户端uuid列表
+		resp.Online = GetOnlineClients()
 		// 清除UUID，简化报告单
 		resp.Data = GetLatestReport()
 		for _, report := range resp.Data {
