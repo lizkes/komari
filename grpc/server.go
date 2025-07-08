@@ -475,7 +475,7 @@ func StartGRPCServer(port string) (*grpc.Server, error) {
 	proto.RegisterMonitorServiceServer(grpcServer, monitorServer)
 
 	// 设置全局服务器实例
-	// SetGlobalMonitorServer(monitorServer) // This line is removed as per the edit hint
+	SetGlobalMonitorServer(monitorServer)
 
 	// 为ping调度注入gRPC函数
 	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients)
