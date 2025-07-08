@@ -23,19 +23,23 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-// MonitorServer 实现 MonitorService 接口
 type MonitorServer struct {
 	proto.UnimplementedMonitorServiceServer
 
 	// 连接管理
 	clientStreams map[string]proto.MonitorService_StreamMonitorServer
 	streamsMutex  sync.RWMutex
+
+	// 部分数据缓存
+	partialReports map[string]*common.Report
+	partialMutex   sync.RWMutex
 }
 
-// NewMonitorServer 创建新的监控服务器
+// NewMonitorServer 创建新的监控服务器实例
 func NewMonitorServer() *MonitorServer {
 	return &MonitorServer{
-		clientStreams: make(map[string]proto.MonitorService_StreamMonitorServer),
+		clientStreams:  make(map[string]proto.MonitorService_StreamMonitorServer),
+		partialReports: make(map[string]*common.Report),
 	}
 }
 
@@ -163,14 +167,8 @@ func (s *MonitorServer) authenticateClient(token string) (uuid string, success b
 	return uuid, true, ""
 }
 
-// handleMonitorReport 处理监控报告
+// handleMonitorReport 处理客户端监控报告（支持部分数据合并）
 func (s *MonitorServer) handleMonitorReport(clientUUID string, report *proto.MonitorReport) error {
-	// 转换为common.Report格式
-	commonReport, err := s.convertToCommonReport(clientUUID, report)
-	if err != nil {
-		return err
-	}
-
 	// 处理基础信息上报
 	if report.Type == "basic_info" && report.Message != "" {
 		var basicInfo map[string]interface{}
@@ -182,14 +180,108 @@ func (s *MonitorServer) handleMonitorReport(clientUUID string, report *proto.Mon
 		}
 	}
 
-	// 保存报告到缓存
-	err = s.saveClientReport(clientUUID, commonReport)
-	if err != nil {
+	// 获取或创建客户端的部分报告缓存
+	s.partialMutex.Lock()
+	defer s.partialMutex.Unlock()
+
+	if s.partialReports[clientUUID] == nil {
+		s.partialReports[clientUUID] = &common.Report{
+			UUID:      clientUUID,
+			UpdatedAt: time.Now(),
+		}
+	}
+
+	currentReport := s.partialReports[clientUUID]
+
+	// 根据报告类型合并数据
+	reportType := report.Type
+
+	switch reportType {
+	case "network_only":
+		// 仅更新网络相关数据
+		if report.Network != nil {
+			currentReport.Network = common.NetworkReport{
+				Up:        report.Network.Up,
+				Down:      report.Network.Down,
+				TotalUp:   report.Network.TotalUp,
+				TotalDown: report.Network.TotalDown,
+			}
+		}
+		if report.Connections != nil {
+			currentReport.Connections = common.ConnectionsReport{
+				TCP: int(report.Connections.Tcp),
+				UDP: int(report.Connections.Udp),
+			}
+		}
+	case "general_only":
+		// 更新常规监控数据
+		if report.Cpu != nil {
+			currentReport.CPU = common.CPUReport{
+				Name:  report.Cpu.Name,
+				Cores: int(report.Cpu.Cores),
+				Arch:  report.Cpu.Arch,
+				Usage: report.Cpu.Usage,
+			}
+		}
+
+		// 获取客户端基础信息以补充total字段
+		clientInfo, err := clients.GetClientBasicInfo(clientUUID)
+		if err != nil {
+			log.Printf("获取客户端基础信息失败: %v", err)
+		}
+
+		if report.Ram != nil {
+			currentReport.Ram = common.RamReport{
+				Total: clientInfo.MemTotal, // 从基础信息补充
+				Used:  report.Ram.Used,
+			}
+		}
+		if report.Swap != nil {
+			currentReport.Swap = common.RamReport{
+				Total: clientInfo.SwapTotal, // 从基础信息补充
+				Used:  report.Swap.Used,
+			}
+		}
+		if report.Load != nil {
+			currentReport.Load = common.LoadReport{
+				Load1:  report.Load.Load1,
+				Load5:  report.Load.Load5,
+				Load15: report.Load.Load15,
+			}
+		}
+		if report.Disk != nil {
+			currentReport.Disk = common.DiskReport{
+				Total: clientInfo.DiskTotal, // 从基础信息补充
+				Used:  report.Disk.Used,
+			}
+		}
+		currentReport.Uptime = report.Uptime
+		currentReport.Process = int(report.Process)
+	default:
+		// 完整报告，转换所有数据
+		fullReport, err := s.convertToCommonReport(clientUUID, report)
+		if err != nil {
+			return err
+		}
+		*currentReport = fullReport
+	}
+
+	// 更新时间戳和其他通用字段
+	currentReport.UpdatedAt = time.Now()
+	currentReport.Method = report.Method
+	currentReport.Message = report.Message
+	if report.UpdatedAt != nil {
+		currentReport.UpdatedAt = report.UpdatedAt.AsTime()
+	}
+
+	// 保存到缓存和数据库
+	if err := s.saveClientReport(clientUUID, *currentReport); err != nil {
+		log.Printf("保存客户端报告失败: %v", err)
 		return err
 	}
 
-	// 更新最新报告
-	ws.SetLatestReport(clientUUID, &commonReport)
+	// 更新WebSocket缓存
+	ws.SetLatestReport(clientUUID, currentReport)
 
 	return nil
 }
@@ -383,7 +475,7 @@ func StartGRPCServer(port string) (*grpc.Server, error) {
 	proto.RegisterMonitorServiceServer(grpcServer, monitorServer)
 
 	// 设置全局服务器实例
-	SetGlobalMonitorServer(monitorServer)
+	// SetGlobalMonitorServer(monitorServer) // This line is removed as per the edit hint
 
 	// 为ping调度注入gRPC函数
 	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients)
