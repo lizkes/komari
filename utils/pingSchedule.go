@@ -19,6 +19,22 @@ const (
 	IPProtocolBoth
 )
 
+// String 将IPProtocol转换为可读字符串
+func (p IPProtocol) String() string {
+	switch p {
+	case IPProtocolIPv4:
+		return "IPv4"
+	case IPProtocolIPv6:
+		return "IPv6"
+	case IPProtocolBoth:
+		return "IPv4+IPv6"
+	case IPProtocolUnknown:
+		return "Unknown"
+	default:
+		return "Unknown"
+	}
+}
+
 // ClientIPInfo 客户端IP信息
 type ClientIPInfo struct {
 	IPv4 string
@@ -121,7 +137,7 @@ func (c *IPProtocolCache) cleanup() {
 	}
 
 	if cleaned > 0 {
-		log.Printf("缓存清理完成: 统一协议缓存清理%d条", cleaned)
+		// log.Printf("缓存清理完成: 统一协议缓存清理%d条", cleaned)
 	}
 	c.stats.CleanupRuns++
 }
@@ -130,18 +146,18 @@ func (c *IPProtocolCache) cleanup() {
 func DetectTargetIPProtocol(target string) IPProtocol {
 	// 先尝试从统一缓存获取
 	if protocol, hit := ipProtocolCache.getProtocolResult(target); hit {
-		log.Printf("目标协议缓存命中: %s -> %v", target, protocol)
+		// log.Printf("目标协议缓存命中: %s -> %v", target, protocol)
 		return protocol
 	}
 
-	log.Printf("目标协议缓存未命中，开始检测: %s", target)
+	// log.Printf("目标协议缓存未命中，开始检测: %s", target)
 
 	// 执行完整的协议检测
 	protocol := detectProtocolDirect(target)
 
 	// 缓存结果到统一缓存
 	ipProtocolCache.setProtocolResult(target, protocol)
-	log.Printf("目标协议检测完成: %s -> %v", target, protocol)
+	// log.Printf("目标协议检测完成: %s -> %v", target, protocol)
 	return protocol
 }
 
@@ -225,11 +241,11 @@ func GetClientIPCapabilitiesWithCache(clientUUID string, getClientIPInfoFunc fun
 
 	// 先尝试从缓存获取
 	if protocol, hit := ipProtocolCache.getProtocolResult(cacheKey); hit {
-		log.Printf("客户端协议缓存命中: %s -> %v", clientUUID, protocol)
+		// log.Printf("客户端协议缓存命中: %s -> %v", clientUUID, protocol)
 		return protocol
 	}
 
-	log.Printf("客户端协议缓存未命中，开始查询: %s", clientUUID)
+	// log.Printf("客户端协议缓存未命中，开始查询: %s", clientUUID)
 
 	// 缓存未命中，调用函数获取IP信息
 	ipInfo := getClientIPInfoFunc(clientUUID)
@@ -239,7 +255,7 @@ func GetClientIPCapabilitiesWithCache(clientUUID string, getClientIPInfoFunc fun
 
 	// 缓存结果到统一的协议缓存中
 	ipProtocolCache.setProtocolResult(cacheKey, protocol)
-	log.Printf("客户端协议查询完成: %s -> %v", clientUUID, protocol)
+	// log.Printf("客户端协议查询完成: %s -> %v", clientUUID, protocol)
 
 	return protocol
 }
@@ -271,6 +287,7 @@ type PingTaskManager struct {
 	sendPingTaskFunc    func(clientUUID string, taskID uint32, pingType, target string) error
 	getClientsFunc      func() map[string]bool
 	getClientIPInfoFunc func(clientUUID string) ClientIPInfo // 新增：获取客户端IP信息的函数
+	getClientNameFunc   func(clientUUID string) string       // 新增：获取客户端名称的函数
 }
 
 var manager = &PingTaskManager{
@@ -280,10 +297,11 @@ var manager = &PingTaskManager{
 }
 
 // SetGRPCFunctions 设置gRPC相关函数（由grpc包调用）
-func SetGRPCFunctions(sendPingTask func(string, uint32, string, string) error, getClients func() map[string]bool, getClientIPInfo func(string) ClientIPInfo) {
+func SetGRPCFunctions(sendPingTask func(string, uint32, string, string) error, getClients func() map[string]bool, getClientIPInfo func(string) ClientIPInfo, getClientName func(string) string) {
 	manager.sendPingTaskFunc = sendPingTask
 	manager.getClientsFunc = getClients
 	manager.getClientIPInfoFunc = getClientIPInfo
+	manager.getClientNameFunc = getClientName
 }
 
 // Reload 重载时间表
@@ -340,7 +358,7 @@ func executePingTask(task models.PingTask) {
 	// 检测目标的IP协议类型
 	targetProtocol := DetectTargetIPProtocol(task.Target)
 	if targetProtocol == IPProtocolUnknown {
-		log.Printf("无法确定ping目标 %s 的IP协议类型", task.Target)
+		// log.Printf("无法确定ping目标 %s 的IP协议类型", task.Target)
 	}
 
 	compatibleClients := 0
@@ -354,8 +372,15 @@ func executePingTask(task models.PingTask) {
 			clientProtocol := GetClientIPCapabilitiesWithCache(clientUUID, manager.getClientIPInfoFunc)
 
 			if !isClientCompatibleWithTarget(clientProtocol, targetProtocol) {
-				log.Printf("跳过客户端 %s，IP协议不兼容：客户端(%v) vs 目标(%v)",
-					clientUUID, clientProtocol, targetProtocol)
+				// 获取客户端名称用于日志显示
+				clientName := clientUUID
+				if manager.getClientNameFunc != nil {
+					if name := manager.getClientNameFunc(clientUUID); name != "" {
+						clientName = name
+					}
+				}
+				log.Printf("跳过客户端 %s，IP协议不兼容：客户端(%s) vs 目标(%s) [目标: %s]",
+					clientName, clientProtocol.String(), targetProtocol.String(), task.Target)
 				continue
 			}
 		}
@@ -370,7 +395,7 @@ func executePingTask(task models.PingTask) {
 	}
 
 	if compatibleClients == 0 && len(task.Clients) > 0 {
-		log.Printf("警告：ping任务 %d (目标:%s) 没有兼容的在线客户端", task.Id, task.Target)
+		// log.Printf("警告：ping任务 %d (目标:%s) 没有兼容的在线客户端", task.Id, task.Target)
 	}
 }
 

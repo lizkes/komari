@@ -23,6 +23,7 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
+// MonitorServer gRPC监控服务器
 type MonitorServer struct {
 	proto.UnimplementedMonitorServiceServer
 
@@ -33,13 +34,18 @@ type MonitorServer struct {
 	// 部分数据缓存
 	partialReports map[string]*common.Report
 	partialMutex   sync.RWMutex
+
+	// 客户端基础信息缓存，避免频繁查数据库
+	clientBasicInfo map[string]*models.Client
+	basicInfoMutex  sync.RWMutex
 }
 
 // NewMonitorServer 创建新的监控服务器实例
 func NewMonitorServer() *MonitorServer {
 	return &MonitorServer{
-		clientStreams:  make(map[string]proto.MonitorService_StreamMonitorServer),
-		partialReports: make(map[string]*common.Report),
+		clientStreams:   make(map[string]proto.MonitorService_StreamMonitorServer),
+		partialReports:  make(map[string]*common.Report),
+		clientBasicInfo: make(map[string]*models.Client),
 	}
 }
 
@@ -105,6 +111,9 @@ func (s *MonitorServer) StreamMonitor(stream proto.MonitorService_StreamMonitorS
 
 				// 保存新的客户端流
 				s.setClientStream(clientUUID, stream)
+
+				// 加载并缓存客户端基础信息
+				s.loadClientBasicInfo(clientUUID)
 
 				// 发送认证成功响应
 				response := &proto.MonitorResponse{
@@ -237,10 +246,17 @@ func (s *MonitorServer) handleMonitorReport(clientUUID string, report *proto.Mon
 			}
 		}
 
-		// 获取客户端基础信息以补充total字段
-		clientInfo, err := clients.GetClientBasicInfo(clientUUID)
-		if err != nil {
-			log.Printf("获取客户端基础信息失败: %v", err)
+		// 获取客户端基础信息以补充total字段（优先使用缓存）
+		var clientInfo models.Client
+		if cachedClient, exists := s.getCachedClientBasicInfo(clientUUID); exists {
+			clientInfo = *cachedClient
+		} else {
+			// 缓存未命中，回退到查数据库
+			var err error
+			clientInfo, err = clients.GetClientBasicInfo(clientUUID)
+			if err != nil {
+				log.Printf("获取客户端基础信息失败: %v", err)
+			}
 		}
 
 		if report.Ram != nil {
@@ -442,6 +458,13 @@ func (s *MonitorServer) removeClientStream(clientUUID string) {
 			log.Printf("已清理客户端 %s 的部分报告缓存", clientUUID)
 		}
 		s.partialMutex.Unlock()
+
+		// 清理基础信息缓存
+		s.basicInfoMutex.Lock()
+		if s.clientBasicInfo[clientUUID] != nil {
+			delete(s.clientBasicInfo, clientUUID)
+		}
+		s.basicInfoMutex.Unlock()
 	} else {
 		log.Printf("警告：尝试移除不存在的客户端连接 %s", clientUUID)
 	}
@@ -519,7 +542,7 @@ func StartGRPCServer(port string) (*grpc.Server, error) {
 	SetGlobalMonitorServer(monitorServer)
 
 	// 为ping调度注入gRPC函数
-	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients, GetClientIPInfo)
+	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients, GetClientIPInfo, GetClientName)
 
 	ws.SetGRPCConnectedClientsFunc(GetGRPCConnectedClients)
 
@@ -532,4 +555,32 @@ func StartGRPCServer(port string) (*grpc.Server, error) {
 	}()
 
 	return grpcServer, nil
+}
+
+// loadClientBasicInfo 加载并缓存客户端基础信息
+func (s *MonitorServer) loadClientBasicInfo(clientUUID string) {
+	client, err := clients.GetClientBasicInfo(clientUUID)
+	if err != nil {
+		return // 加载失败时不缓存，后续会回退到查数据库
+	}
+
+	s.basicInfoMutex.Lock()
+	defer s.basicInfoMutex.Unlock()
+	s.clientBasicInfo[clientUUID] = &client
+}
+
+// getCachedClientBasicInfo 从缓存获取客户端基础信息
+func (s *MonitorServer) getCachedClientBasicInfo(clientUUID string) (*models.Client, bool) {
+	s.basicInfoMutex.RLock()
+	defer s.basicInfoMutex.RUnlock()
+	client, exists := s.clientBasicInfo[clientUUID]
+	return client, exists
+}
+
+// getCachedClientName 从缓存获取客户端名称
+func (s *MonitorServer) getCachedClientName(clientUUID string) string {
+	if client, exists := s.getCachedClientBasicInfo(clientUUID); exists {
+		return client.Name
+	}
+	return ""
 }

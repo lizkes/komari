@@ -104,6 +104,17 @@ func IsClientConnectedViaGRPC(clientUUID string) bool {
 
 // GetClientIPInfo 获取客户端IP信息（用于ping任务IP协议检查）
 func GetClientIPInfo(clientUUID string) utils.ClientIPInfo {
+	// 优先从gRPC服务器的内存缓存获取
+	if globalMonitorServer != nil {
+		if client, exists := globalMonitorServer.getCachedClientBasicInfo(clientUUID); exists {
+			return utils.ClientIPInfo{
+				IPv4: client.IPv4,
+				IPv6: client.IPv6,
+			}
+		}
+	}
+
+	// 缓存未命中时回退到查数据库（主要用于非连接状态的客户端）
 	client, err := clients.GetClientBasicInfo(clientUUID)
 	if err != nil {
 		return utils.ClientIPInfo{} // 返回空信息
@@ -113,4 +124,22 @@ func GetClientIPInfo(clientUUID string) utils.ClientIPInfo {
 		IPv4: client.IPv4,
 		IPv6: client.IPv6,
 	}
+}
+
+// GetClientName 获取客户端名称（用于日志显示）
+func GetClientName(clientUUID string) string {
+	// 优先从gRPC服务器的内存缓存获取
+	if globalMonitorServer != nil {
+		if name := globalMonitorServer.getCachedClientName(clientUUID); name != "" {
+			return name
+		}
+	}
+
+	// 缓存未命中时回退到查数据库（主要用于非连接状态的客户端）
+	client, err := clients.GetClientBasicInfo(clientUUID)
+	if err != nil {
+		return "" // 返回空名称，将使用UUID
+	}
+
+	return client.Name
 }
