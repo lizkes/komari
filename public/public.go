@@ -52,7 +52,7 @@ func UpdateIndex(cfg models.Config) {
 	if cfg.Sitename == "Komari" {
 		titleReplacement = "<title>Komari Monitor</title>"
 	} else {
-		titleReplacement = fmt.Sprintf("<title>%s - Komari Monitor</title>", html.EscapeString(cfg.Sitename))
+		titleReplacement = fmt.Sprintf("<title>%s</title>", html.EscapeString(cfg.Sitename))
 	}
 
 	replaceMap := map[string]string{
