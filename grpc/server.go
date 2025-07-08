@@ -388,6 +388,8 @@ func StartGRPCServer(port string) (*grpc.Server, error) {
 	// 为ping调度注入gRPC函数
 	utils.SetGRPCFunctions(SendPingTaskToClient, GetGRPCConnectedClients)
 
+	ws.SetGRPCConnectedClientsFunc(GetGRPCConnectedClients)
+
 	log.Printf("gRPC服务器启动在端口 %s", port)
 
 	go func() {
