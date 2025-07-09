@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/komari-monitor/komari/common"
@@ -9,8 +10,6 @@ import (
 	"github.com/komari-monitor/komari/utils"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-
-	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -107,23 +106,60 @@ func UpdateOrInsertBasicInfo(cbi common.ClientInfo) error {
 	return nil
 }
 func SaveClientInfo(update map[string]interface{}) error {
+	utils.LogDebug("Database: SaveClientInfo called with data: %+v", update)
+
 	db := dbcore.GetDBInstance()
 	clientUUID, ok := update["uuid"].(string)
 	if !ok || clientUUID == "" {
+		utils.LogDebug("Database: Invalid or missing client UUID in update data")
 		return fmt.Errorf("invalid client UUID")
 	}
 
+	utils.LogDebug("Database: Processing update for client UUID: %s", clientUUID)
+
 	// 确保更新的字段不为空
 	if len(update) == 0 {
+		utils.LogDebug("Database: No fields to update for client %s", clientUUID)
 		return fmt.Errorf("no fields to update")
 	}
 
-	update["updated_at"] = time.Now()
-
-	err := db.Model(&models.Client{}).Where("uuid = ?", clientUUID).Updates(update).Error
-	if err != nil {
-		return err
+	// 记录具体要更新的字段
+	utils.LogDebug("Database: Fields to update: %d", len(update))
+	for key, value := range update {
+		utils.LogDebug("Database: Field '%s' = '%v' (type: %T)", key, value, value)
 	}
+
+	update["updated_at"] = time.Now()
+	utils.LogDebug("Database: Added updated_at timestamp")
+
+	// 执行数据库更新前先检查当前记录
+	var currentClient models.Client
+	if err := db.Where("uuid = ?", clientUUID).First(&currentClient).Error; err != nil {
+		utils.LogDebug("Database: Failed to find current client record: %v", err)
+		return fmt.Errorf("client not found: %v", err)
+	}
+	utils.LogDebug("Database: Current client record before update: %+v", currentClient)
+
+	// 执行更新操作
+	utils.LogDebug("Database: Executing GORM Updates() operation...")
+	result := db.Model(&models.Client{}).Where("uuid = ?", clientUUID).Updates(update)
+
+	if result.Error != nil {
+		utils.LogDebug("Database: GORM Updates() failed: %v", result.Error)
+		return result.Error
+	}
+
+	utils.LogDebug("Database: GORM Updates() completed - RowsAffected: %d", result.RowsAffected)
+
+	// 检查更新后的记录
+	var updatedClient models.Client
+	if err := db.Where("uuid = ?", clientUUID).First(&updatedClient).Error; err != nil {
+		utils.LogDebug("Database: Failed to retrieve updated client record: %v", err)
+	} else {
+		utils.LogDebug("Database: Updated client record after save: %+v", updatedClient)
+	}
+
+	utils.LogDebug("Database: SaveClientInfo completed successfully for UUID: %s", clientUUID)
 	return nil
 }
 

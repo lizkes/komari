@@ -31,3 +31,4 @@ go.work.sum
 .env
 
 public/dist
+**/komari-rule.mdc
