@@ -28,6 +28,47 @@ INSTALL_DIR="/opt/komari"
 DATA_DIR="/opt/komari/data"
 SERVICE_NAME="komari"
 BINARY_PATH="$INSTALL_DIR/komari"
+LOG_LEVEL="info"  # 默认日志级别
+
+# Show help
+show_help() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --log-level LEVEL    Set log level (info, debug) [default: info]"
+    echo "  -h, --help          Show this help message"
+    echo ""
+    echo "Interactive mode will start if no options are provided."
+    echo ""
+    echo "Examples:"
+    echo "  $0                     # 交互式安装"
+    echo "  $0 --log-level debug  # 安装并设置为DEBUG日志级别"
+}
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --log-level)
+                LOG_LEVEL="$2"
+                if [[ "$LOG_LEVEL" != "info" && "$LOG_LEVEL" != "debug" ]]; then
+                    log_error "无效的日志级别: $LOG_LEVEL (支持: info, debug)"
+                    exit 1
+                fi
+                shift 2
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "未知参数: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
 
 # Show banner
 show_banner() {
@@ -36,6 +77,12 @@ show_banner() {
     echo "            Komari Monitoring System Installer"
     echo "       https://github.com/lizkes/komari"
     echo "=============================================================="
+    echo
+    if [[ "$LOG_LEVEL" == "debug" ]]; then
+        echo "日志级别: DEBUG (详细诊断模式)"
+    else
+        echo "日志级别: INFO (标准模式)"
+    fi
     echo
 }
 
@@ -181,6 +228,14 @@ create_systemd_service() {
     log_step "创建 systemd 服务..."
 
     local service_file="/etc/systemd/system/${SERVICE_NAME}.service"
+    local exec_start="${BINARY_PATH} server -l 0.0.0.0:25774"
+    
+    # 如果设置了非默认日志级别，添加到启动命令
+    if [[ "$LOG_LEVEL" != "info" ]]; then
+        exec_start="${exec_start} --log-level ${LOG_LEVEL}"
+        log_info "服务将使用日志级别: $LOG_LEVEL"
+    fi
+    
     cat > "$service_file" << EOF
 [Unit]
 Description=Komari Monitor Service
@@ -188,16 +243,21 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${BINARY_PATH} server -l 0.0.0.0:25774
+ExecStart=${exec_start}
 WorkingDirectory=${DATA_DIR}
 Restart=always
 User=root
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     log_success "systemd 服务文件创建完成"
+    if [[ "$LOG_LEVEL" == "debug" ]]; then
+        log_info "服务启动命令: $exec_start"
+    fi
 }
 
 # Show access information
@@ -218,6 +278,12 @@ show_access_info() {
     log_info "  停止:    systemctl stop $SERVICE_NAME"
     log_info "  重启: systemctl restart $SERVICE_NAME"
     log_info "  日志:    journalctl -u $SERVICE_NAME -f"
+    echo
+    if [[ "$LOG_LEVEL" == "debug" ]]; then
+        log_info "当前服务使用DEBUG日志级别，将输出详细的诊断信息"
+        log_info "如需切换到INFO级别，请编辑: /etc/systemd/system/${SERVICE_NAME}.service"
+        log_info "然后执行: systemctl daemon-reload && systemctl restart $SERVICE_NAME"
+    fi
 }
 
 # Upgrade function
@@ -360,6 +426,77 @@ stop_service() {
     log_success "服务已停止"
 }
 
+# Change log level
+change_log_level() {
+    if ! is_installed; then
+        log_error "Komari 未安装"
+        return
+    fi
+    if ! check_systemd; then
+        log_error "未检测到 systemd。无法管理服务。"
+        return
+    fi
+    
+    echo "当前日志级别配置："
+    local current_level=$(grep "ExecStart" "/etc/systemd/system/${SERVICE_NAME}.service" | grep -o "log-level [a-z]*" | cut -d' ' -f2)
+    if [[ -z "$current_level" ]]; then
+        current_level="info"
+    fi
+    log_info "  当前级别: $current_level"
+    echo
+    echo "选择新的日志级别："
+    echo "  1) info  - 标准日志输出"
+    echo "  2) debug - 详细诊断日志 (用于故障排查)"
+    echo "  3) 取消"
+    echo
+    
+    read -p "输入选项 [1-3]: " level_choice
+    
+    case $level_choice in
+        1)
+            new_level="info"
+            ;;
+        2)
+            new_level="debug"
+            ;;
+        3)
+            log_info "已取消"
+            return
+            ;;
+        *)
+            log_error "无效选项"
+            return
+            ;;
+    esac
+    
+    if [[ "$new_level" == "$current_level" ]]; then
+        log_info "日志级别已经是 $new_level，无需更改"
+        return
+    fi
+    
+    log_step "更新日志级别为: $new_level"
+    
+    # 停止服务
+    systemctl stop ${SERVICE_NAME}.service
+    
+    # 更新服务文件
+    LOG_LEVEL="$new_level"
+    create_systemd_service
+    
+    # 重新加载并启动服务
+    systemctl daemon-reload
+    systemctl start ${SERVICE_NAME}.service
+    
+    if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+        log_success "日志级别已更新为: $new_level"
+        if [[ "$new_level" == "debug" ]]; then
+            log_info "现在将输出详细的网络和连接诊断信息"
+            log_info "查看实时日志: journalctl -u $SERVICE_NAME -f"
+        fi
+    else
+        log_error "服务启动失败，请检查日志"
+    fi
+}
 
 # Main menu
 main_menu() {
@@ -372,10 +509,11 @@ main_menu() {
     echo "  5) 查看日志"
     echo "  6) 重启服务"
     echo "  7) 停止服务"
-    echo "  8) 退出"
+    echo "  8) 切换日志级别"
+    echo "  9) 退出"
     echo
 
-    read -p "输入选项 [1-8]: " choice
+    read -p "输入选项 [1-9]: " choice
 
     case $choice in
         1) install_binary ;;
@@ -385,11 +523,20 @@ main_menu() {
         5) show_logs ;;
         6) restart_service ;;
         7) stop_service ;;
-        8) exit 0 ;;
+        8) change_log_level ;;
+        9) exit 0 ;;
         *) log_error "无效选项" ;;
     esac
 }
 
 # Main execution
+parse_args "$@"
 check_root
-main_menu
+
+# 如果没有参数，显示交互菜单，否则执行安装
+if [[ $# -eq 0 ]]; then
+    main_menu
+else
+    show_banner
+    install_binary
+fi
