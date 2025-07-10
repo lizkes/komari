@@ -20,7 +20,33 @@ import (
 
 var (
 	Records = cache.New(1*time.Minute, 1*time.Minute)
+
+	// 全局函数指针，用于避免循环导入
+	IsClientConnectedViaGRPCFunc func(clientUUID string) bool
+	SendTerminalTaskToClientFunc func(clientUUID, requestID string) error
 )
+
+// SetGRPCFunctions 设置gRPC相关函数，避免循环导入
+func SetGRPCFunctions(isConnected func(string) bool, sendTerminal func(string, string) error) {
+	IsClientConnectedViaGRPCFunc = isConnected
+	SendTerminalTaskToClientFunc = sendTerminal
+}
+
+// IsClientConnectedViaGRPC 检查客户端是否通过gRPC连接
+func IsClientConnectedViaGRPC(clientUUID string) bool {
+	if IsClientConnectedViaGRPCFunc != nil {
+		return IsClientConnectedViaGRPCFunc(clientUUID)
+	}
+	return false
+}
+
+// SendTerminalTaskToClient 向客户端发送终端任务
+func SendTerminalTaskToClient(clientUUID, requestID string) error {
+	if SendTerminalTaskToClientFunc != nil {
+		return SendTerminalTaskToClientFunc(clientUUID, requestID)
+	}
+	return nil
+}
 
 type TerminalSession struct {
 	UUID        string

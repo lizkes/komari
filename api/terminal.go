@@ -10,7 +10,6 @@ import (
 	"github.com/komari-monitor/komari/database/clients"
 	"github.com/komari-monitor/komari/database/logOperation"
 	"github.com/komari-monitor/komari/utils"
-	"github.com/komari-monitor/komari/ws"
 )
 
 func RequestTerminal(c *gin.Context) {
@@ -63,7 +62,8 @@ func RequestTerminal(c *gin.Context) {
 		return nil
 	})
 
-	if ws.GetConnectedClients()[uuid] == nil {
+	// 检查客户端是否通过gRPC连接
+	if !IsClientConnectedViaGRPC(uuid) {
 		conn.WriteMessage(1, []byte("Client offline!\n被控端离线!"))
 		conn.Close()
 		TerminalSessionsMutex.Lock()
@@ -71,17 +71,18 @@ func RequestTerminal(c *gin.Context) {
 		TerminalSessionsMutex.Unlock()
 		return
 	}
-	err = ws.GetConnectedClients()[uuid].WriteJSON(gin.H{
-		"message":    "terminal",
-		"request_id": id,
-	})
+
+	// 通过gRPC发送终端请求
+	err = SendTerminalTaskToClient(uuid, id)
 	if err != nil {
+		conn.WriteMessage(1, []byte("Failed to send terminal request!\n发送终端请求失败!"))
 		conn.Close()
 		TerminalSessionsMutex.Lock()
 		delete(TerminalSessions, id)
 		TerminalSessionsMutex.Unlock()
 		return
 	}
+
 	conn.WriteMessage(1, []byte("等待被控端连接 waiting for agent..."))
 	// 如果没有连接上，则关闭连接
 	time.AfterFunc(30*time.Second, func() {
