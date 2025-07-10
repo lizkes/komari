@@ -469,6 +469,10 @@ func (s *MonitorServer) removeClientStream(clientUUID string) {
 			delete(s.clientBasicInfo, clientUUID)
 		}
 		s.basicInfoMutex.Unlock()
+
+		// 清理WebSocket最新报告缓存
+		ws.DeleteLatestReport(clientUUID)
+		log.Printf("已清理客户端 %s 的最新报告缓存", clientName)
 	} else {
 		clientName := s.getClientDisplayName(clientUUID)
 		log.Printf("警告：尝试移除不存在的客户端连接 %s", clientName)
